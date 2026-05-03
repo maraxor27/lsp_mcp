@@ -44,6 +44,7 @@ const SymbolKind = new Map([
 class ClangdClient {
   constructor() {
     this.workdir = process.cwd();
+    this.base_uri = `file://${this.workdir}/`;
   }
   async start() {
     const log_fd = await open(this.log_file, 'a+');
@@ -77,7 +78,7 @@ class ClangdClient {
     const header_regexp = /^Content-Length: (\d+)\r\n\r\n/m;
     const receiver = this.receiver;
     
-    receiver.pending = receiver.pending + data.toString();
+    receiver.pending = Buffer.concat([receiver.pending, data]);
 
     let done = false;
     while (!done) {
@@ -87,14 +88,18 @@ class ClangdClient {
       }
 
       switch (this.receiver.state) {
-      case 0: // Header Parsing
-        const match = header_regexp.exec(receiver.pending);
+      case 0: { // Header Parsing
+        const maybe_header = receiver.pending.subarray(0, 50).toString()
+        const match = header_regexp.exec(maybe_header);
         if (match != null && match.length == 2) {
           const content_length = Number(match[1]);
           if (isNaN(content_length)) {
             throw `Invalid Content-Length: ${match[1]}`;
           }
-          receiver.pending = receiver.pending.slice(match[0].length);
+
+          const byte_length = Buffer.from(match[0], 'utf8').length;
+          
+          receiver.pending = receiver.pending.subarray(byte_length);
           receiver.state = 1;
           receiver.content_length = content_length;
         } else {
@@ -102,10 +107,11 @@ class ClangdClient {
           done = true
         }
         break;
+      }
       case 1:
         if (receiver.pending.length >= receiver.content_length) {
-          const msg_json = receiver.pending.slice(0, receiver.content_length);
-          receiver.pending = receiver.pending.slice(receiver.content_length);
+          const msg_json = receiver.pending.subarray(0, receiver.content_length);
+          receiver.pending = receiver.pending.subarray(receiver.content_length);
           
           const msg = JSON.parse(msg_json);
           const promise_resolver = this.pending_requests.get(msg.id);
@@ -186,11 +192,11 @@ class ClangdClient {
     }
 
     const relative_file = file.slice(this.workdir.length + 1);
-    await this.didOpen(relative_file);
+    await this.did_open(relative_file);
   }
 
-  async didOpen(relative_file, check=false) {
-    let data = "";
+  async did_open(relative_file, check=false) {
+    let data;
     const absolute_file = this.workdir + "/" + relative_file;
     try {
       data = await new Promise(
@@ -210,7 +216,7 @@ class ClangdClient {
 
     this.notify("textDocument/didOpen", {
       textDocument: {
-        uri: `file://${this.workdir}/{relative_file}`,
+        uri: this.file_to_uri(relative_file),
         languageId: "cpp",
         version: 1,
         text: data
@@ -219,14 +225,16 @@ class ClangdClient {
   }
 
   async symbol_search(symbol) {
-    const symbols = await this.request("workspace/symbol",{
+    const symbols = await this.request("workspace/symbol", {
       query: symbol
     });
     
-    const base_uri = `file://${this.workdir}/`;
-    const base_uri_length = base_uri.length;
+    if (symbols === null) {
+      throw `No symbol found for "${symbol}"`
+    }
+
     const local_symbols = Array.prototype.map.call(symbols, (symbol) => {
-      const file = symbol.location.uri.slice(base_uri_length);
+      const file = this.uri_to_file(symbol.location.uri);
       const line = symbol.location.range.start.line;
       const character = symbol.location.range.start.character;
 
@@ -243,19 +251,24 @@ class ClangdClient {
   }
 
   async find_all_references(file, line, character) {
-    const references = await this.request("textDocument/references",{
-      textdocument: { uri: `file://${this.workspace}/${file}` },
+    // Ensure that the file is opened and up to date
+    // TODO: Cache the opened files and avoid opening already opened files.
+    await this.did_open(file);
+  
+    const references = await this.request("textDocument/references", {
+      textDocument: { uri: this.file_to_uri(file) },
       position: {
         line: line,
         character: character
       }
     });
-
     
-    const base_uri = `file://${this.workdir}/`;
-    const base_uri_length = base_uri.length;
+    if (references === null || references === undefined) {
+      throw `No references found on ${file}:${line}:${character} `;
+    }
+    
     const local_references = Array.prototype.map.call(references, (reference) => {
-      const file = reference.uri.slice(base_uri_length);
+      const file = this.uri_to_file(reference.uri);
       const line = reference.range.start.line;
       const character = reference.range.start.character;
 
@@ -267,15 +280,122 @@ class ClangdClient {
     })
     return local_references;
   }
+
+  async hover(file, line, character) {
+    // Ensure that the file is opened and up to date
+    // TODO: Cache the opened files and avoid opening already opened files.
+    await this.did_open(file);
+
+    return await this.request("textDocument/hover", {
+      textDocument: { uri: this.file_to_uri(file) },
+      position: { line, character }
+    });
+  }
+
+  async definition(file, line, character) {
+    // Ensure that the file is opened and up to date
+    // TODO: Cache the opened files and avoid opening already opened files.
+    await this.did_open(file);
+
+    const definition = await this.request("textDocument/definition", {
+      textDocument: this.file_to_uri(file),
+      position: { line, character }
+    });
+
+    return {
+      file: this.uri_to_file(definition.uri),
+      line: definition.range.start.line,
+      character: definition.range.start.character
+    };
+  }
+
+  async prepare_call_hierarchy(file, line, character) {
+    // Ensure that the file is opened and up to date
+    // TODO: Cache the opened files and avoid opening already opened files.
+    await this.did_open(file);
+
+    const call_hierarchy_items = await this.request("textDocument/prepareCallHierarchy", {
+      textDocument: { uri: this.file_to_uri(file) },
+      position: { line, character }
+    });
+
+    if (call_hierarchy_items === null) {
+      return "Couldn't find call hierarchy items";
+    }
+    
+    if (call_hierarchy_items.length > 1) {
+      return "Too many call hierarchy items";
+    }
+
+    return call_hierarchy_items[0];
+  }
+
+  process_call_hierarchy_items_for_mcp(items) {
+    return Array.prototype.map.call(items, (item) => {
+      if (item.fromRanges.length != 1) {
+        throw `call hierarchy item too many from ranges: ${item.fromRanges.length}`;
+      }
+ 
+      const name = item.from.name;
+      const kind = SymbolKind.get(item.from.kind);
+      const details = item.from.details;
+      const file = this.uri_to_file(item.from.uri);
+      const line = item.from.range.start.line;
+      const character = item.from.range.start.character;
+
+      return {
+        name,
+        kind,
+        details,
+        file,
+        line,
+        character
+      };
+    });
+  }
+
+  async incoming_calls(file, line, character) {
+    const call_hierarchy_item = await this.prepare_call_hierarchy(file, line, character);
+    console.log(call_hierarchy_item)
+
+    const incoming_calls = await this.request("callHierarchy/incomingCalls", { item: call_hierarchy_item });
+
+    return this.process_call_hierarchy_items_for_mcp(incoming_calls);
+  }
+  
+  async outgoing_calls(file, line, character) {
+    const call_hierarchy_item = await this.prepare_call_hierarchy(file, line, character);
+    console.log(call_hierarchy_item)
+    
+    const outgoing_calls = await this.request("callHierarchy/outgoingCalls", { item: call_hierarchy_item });
+
+    return this.process_call_hierarchy_items_for_mcp(outgoing_calls);
+  }
+  
+  file_to_uri(file) {
+    const uri = this.base_uri + file;
+    return uri 
+  }
+
+  uri_to_file(uri) {
+    const URI_PREFIX = "file://"
+    if (uri.startsWith(this.base_uri)) {
+      return uri.slice(this.base_uri.length);
+    } else if (uri.startsWith(URI_PREFIX)) {
+      return uri.slice(URI_PREFIX.length);
+    }
+    throw `Invalid uri: "${uri}" "`;
+  }
   
   workdir;
+  base_uri;
   proc = undefined;
   pending_requests = new Map();
   current_request_id = 1;
   receiver = {
     state: 0,
-    content_length: null,
-    pending: ""
+    content_length: 0,
+    pending: Buffer.alloc(0)
   };
   is_initialized = false;
   log_file = "/tmp/clangd.log";
@@ -283,11 +403,9 @@ class ClangdClient {
 
 const clangd = new ClangdClient();
 
-
-
-server.registerTool("symbol-search", {
-  title: 'Symbol Search',
-  description: "Fuzzy search workspace for symbols. Symbols can be identifers, classes, structs, functions, ...",
+server.registerTool("search-symbol", {
+  title: 'Symbol Search Definition',
+  description: "Search symbol definition in workspace. Symbol definitions can be identifers, classes, structs, functions, ...",
   inputSchema: z.object({
     symbol: z.string().describe("Name of the symbol to search"),
   }),
@@ -302,11 +420,6 @@ server.registerTool("symbol-search", {
 */
 }, async function({symbol}) {
   const symbols = await clangd.symbol_search(symbol);
-  
-  const fd = await open("/tmp/clangd-mcp.log", 'a+');
-  const log = fd.createWriteStream();
-  log.write(`<-- symbol-search ("${symbol}")\n`+JSON.stringify(symbols) + "\n");
-  fd.close()
 
   return {
     content: [{ type: 'text', text: JSON.stringify(symbols) }],
@@ -318,7 +431,7 @@ server.registerTool("find-all-references", {
   title: 'Find All References',
   description: "Find all references of a symbol based on its cursor location",
   inputSchema: z.object({
-    file: z.string().describe("File of the cursor position"),
+    file: z.string().describe("Filepath of the cursor position"),
     line: z.number().describe("Line number of the cursor"),
     character: z.number().describe("Character offset of the cursor"),
     max_result: z.number().default(30).describe("Set a maximum number of result. Keep low to avoid overwhelming the context window")
@@ -336,6 +449,106 @@ server.registerTool("find-all-references", {
   return {
     content: [{ type: 'text', text: JSON.stringify(references) }],
     // structuredContent: references
+  }; 
+});
+
+server.registerTool("hover-info", {
+  title: 'Get Hover Information',
+  description: "Get hover information about the symbol at a cusor position.",
+  inputSchema: z.object({
+    file: z.string().describe("Filepath of the cursor position"),
+    line: z.number().describe("Line number of the cursor"),
+    character: z.number().describe("Character offset of the cursor"),
+  }),
+//   outputSchema: z.string().describe("Hover information")
+}, async function({file, line, character}) {
+  const hover_info = await clangd.hover(file, line, character);
+  
+  if (hover_info === undefined || hover_info === null) {
+    throw "No hover info was found."
+  }
+
+  return {
+    content: [{ type: 'text', text: JSON.stringify(hover_info.contents.value) }],
+//     structuredContent: hover_info.contents.value
+  }; 
+});
+
+server.registerTool("goto-definition", {
+  title: 'Find Definition at Position',
+  description: "Find the definition of the symbol at the position.",
+  inputSchema: z.object({
+    file: z.string().describe("Filepath of the cursor position"),
+    line: z.number().describe("Line number of the cursor"),
+    character: z.number().describe("Character offset of the cursor"),
+  }),
+/*
+  z.object({
+    file: z.string().describe("Relative filepath of the reference"),
+    line: z.number().describe("Line number of the reference"), 
+    character: z.number().describe("Character offset of the reference") 
+  }).describe("Reference search result")
+*/
+}, async function({file, line, character}) {
+  const definition = await clangd.definition(file, line, character);
+  
+  return {
+    content: [{ type: 'text', text: JSON.stringify(definition) }],
+    // structuredContent: definition
+  }; 
+});
+
+server.registerTool("incoming-function-calls", {
+  title: 'Incoming Function Calls',
+  description: "List the functions that call the cursor position. Only use on function definitions.",
+  inputSchema: z.object({
+    file: z.string().describe("Filepath of the cursor position"),
+    line: z.number().describe("Line number of the cursor"),
+    character: z.number().describe("Character offset of the cursor"),
+  }),
+/*
+  z.array(z.object({
+    name: z.string(),
+    kind: z.string().describe(),
+    details: z.string(),
+    file: z.string().describe(),
+    line: z.number().describe(), 
+    character: z.number().describe() 
+  }).describe())
+*/
+}, async function({file, line, character}) {
+  const incoming_calls = await clangd.incoming_calls(file, line, character);
+  
+  return {
+    content: [{ type: 'text', text: JSON.stringify(incoming_calls) }],
+    // structuredContent: incoming_calls
+  }; 
+});
+
+server.registerTool("outgoing-function-calls", {
+  title: 'Outgoing Function Calls',
+  description: "List the functions called in a function definition. Position is the function symbol.",
+  inputSchema: z.object({
+    file: z.string().describe("Filepath of the cursor position"),
+    line: z.number().describe("Line number of the cursor"),
+    character: z.number().describe("Character offset of the cursor"),
+  }),
+/*
+  z.array(z.object({
+    name: z.string(),
+    kind: z.string().describe(),
+    details: z.string(),
+    file: z.string().describe(),
+    line: z.number().describe(), 
+    character: z.number().describe() 
+  }).describe())
+*/
+}, async function({file, line, character}) {
+  const outgoing_calls = await clangd.outgoing_calls(file, line, character);
+  
+  return {
+    content: [{ type: 'text', text: JSON.stringify(outgoing_calls) }],
+    // structuredContent: outgoing_calls
   }; 
 });
 
