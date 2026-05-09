@@ -409,21 +409,11 @@ server.registerTool("search-symbol", {
   inputSchema: z.object({
     symbol: z.string().describe("Name of the symbol to search"),
   }),
-/*
-  outputSchema: z.array(z.object({
-    name: z.string().describe("Symbol name"),
-    kind: z.string().describe("Kind of symbol"),
-    file: z.string().describe("Relative filepath of where the symbol is defined"),
-    line: z.number().describe("Line number of the symbol is definition"), 
-    character: z.number().describe("Character offset of the symbol definition") 
-  }).describe("Symbol search result"))
-*/
 }, async function({symbol}) {
   const symbols = await clangd.symbol_search(symbol);
 
   return {
     content: [{ type: 'text', text: JSON.stringify(symbols) }],
-    // structuredContent: symbols
   }; 
 });
 
@@ -436,19 +426,11 @@ server.registerTool("find-all-references", {
     character: z.number().describe("Character offset of the cursor"),
     max_result: z.number().default(30).describe("Set a maximum number of result. Keep low to avoid overwhelming the context window")
   }),
-/*
-  outputSchema: z.array(z.object({
-    file: z.string().describe("Relative filepath of the reference"),
-    line: z.number().describe("Line number of the reference"), 
-    character: z.number().describe("Character offset of the reference") 
-  }).describe("Reference search result"))
-*/
 }, async function({file, line, character}) {
   const references = await clangd.find_all_references(file, line, character);
   
   return {
     content: [{ type: 'text', text: JSON.stringify(references) }],
-    // structuredContent: references
   }; 
 });
 
@@ -460,7 +442,6 @@ server.registerTool("hover-info", {
     line: z.number().describe("Line number of the cursor"),
     character: z.number().describe("Character offset of the cursor"),
   }),
-//   outputSchema: z.string().describe("Hover information")
 }, async function({file, line, character}) {
   const hover_info = await clangd.hover(file, line, character);
   
@@ -470,7 +451,6 @@ server.registerTool("hover-info", {
 
   return {
     content: [{ type: 'text', text: JSON.stringify(hover_info.contents.value) }],
-//     structuredContent: hover_info.contents.value
   }; 
 });
 
@@ -482,19 +462,11 @@ server.registerTool("goto-definition", {
     line: z.number().describe("Line number of the cursor"),
     character: z.number().describe("Character offset of the cursor"),
   }),
-/*
-  z.object({
-    file: z.string().describe("Relative filepath of the reference"),
-    line: z.number().describe("Line number of the reference"), 
-    character: z.number().describe("Character offset of the reference") 
-  }).describe("Reference search result")
-*/
 }, async function({file, line, character}) {
   const definition = await clangd.definition(file, line, character);
   
   return {
     content: [{ type: 'text', text: JSON.stringify(definition) }],
-    // structuredContent: definition
   }; 
 });
 
@@ -506,22 +478,11 @@ server.registerTool("incoming-function-calls", {
     line: z.number().describe("Line number of the cursor"),
     character: z.number().describe("Character offset of the cursor"),
   }),
-/*
-  z.array(z.object({
-    name: z.string(),
-    kind: z.string().describe(),
-    details: z.string(),
-    file: z.string().describe(),
-    line: z.number().describe(), 
-    character: z.number().describe() 
-  }).describe())
-*/
 }, async function({file, line, character}) {
   const incoming_calls = await clangd.incoming_calls(file, line, character);
   
   return {
     content: [{ type: 'text', text: JSON.stringify(incoming_calls) }],
-    // structuredContent: incoming_calls
   }; 
 });
 
@@ -533,29 +494,17 @@ server.registerTool("outgoing-function-calls", {
     line: z.number().describe("Line number of the cursor"),
     character: z.number().describe("Character offset of the cursor"),
   }),
-/*
-  z.array(z.object({
-    name: z.string(),
-    kind: z.string().describe(),
-    details: z.string(),
-    file: z.string().describe(),
-    line: z.number().describe(), 
-    character: z.number().describe() 
-  }).describe())
-*/
 }, async function({file, line, character}) {
   const outgoing_calls = await clangd.outgoing_calls(file, line, character);
   
   return {
     content: [{ type: 'text', text: JSON.stringify(outgoing_calls) }],
-    // structuredContent: outgoing_calls
   }; 
 });
 
 server.registerTool("reload", {
   description: "Reload the clangd server to use the latest compile_commands.json",
   inputSchema: z.object({}),
-  outputSchema: z.object({})
 }, async function() {
   await clangd.reload();
 });
