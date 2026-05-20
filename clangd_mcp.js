@@ -403,7 +403,7 @@ class ClangdClient {
 
 const clangd = new ClangdClient();
 
-server.registerTool("search-symbol", {
+server.registerTool("clangd_search_symbol", {
   title: 'Symbol Search Definition',
   description: "Search symbol definition in workspace. Symbol definitions can be identifers, classes, structs, functions, ...",
   inputSchema: z.object({
@@ -417,7 +417,7 @@ server.registerTool("search-symbol", {
   }; 
 });
 
-server.registerTool("find-all-references", {
+server.registerTool("clangd_find_all_references", {
   title: 'Find All References',
   description: "Find all references of a symbol based on its cursor location",
   inputSchema: z.object({
@@ -434,7 +434,7 @@ server.registerTool("find-all-references", {
   }; 
 });
 
-server.registerTool("hover-info", {
+server.registerTool("clangd_hover_info", {
   title: 'Get Hover Information',
   description: "Get hover information about the symbol at a cusor position.",
   inputSchema: z.object({
@@ -454,7 +454,7 @@ server.registerTool("hover-info", {
   }; 
 });
 
-server.registerTool("goto-definition", {
+server.registerTool("clangd_goto_definition", {
   title: 'Find Definition at Position',
   description: "Find the definition of the symbol at the position.",
   inputSchema: z.object({
@@ -470,7 +470,7 @@ server.registerTool("goto-definition", {
   }; 
 });
 
-server.registerTool("incoming-function-calls", {
+server.registerTool("clangd_incoming_function_calls", {
   title: 'Incoming Function Calls',
   description: "List the functions that call the cursor position. Only use on function definitions.",
   inputSchema: z.object({
@@ -486,7 +486,7 @@ server.registerTool("incoming-function-calls", {
   }; 
 });
 
-server.registerTool("outgoing-function-calls", {
+server.registerTool("clangd_outgoing_function_calls", {
   title: 'Outgoing Function Calls',
   description: "List the functions called in a function definition. Position is the function symbol.",
   inputSchema: z.object({
@@ -502,7 +502,7 @@ server.registerTool("outgoing-function-calls", {
   }; 
 });
 
-server.registerTool("reload", {
+server.registerTool("clangd_reload", {
   description: "Reload the clangd server to use the latest compile_commands.json",
   inputSchema: z.object({}),
 }, async function() {

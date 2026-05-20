@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "glob": "^13.0.6"
+    "glob": "^13.0.6",
+    "tree-sitter-cpp": "^0.23.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
