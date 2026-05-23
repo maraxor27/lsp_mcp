@@ -5,12 +5,6 @@ import { open } from "node:fs/promises";
 import fs from "node:fs";
 import process from "process";
 import { spawn } from "node:child_process";
-import { glob } from "glob";
-
-export const server = new McpServer({
-  name: "clangd-mcp",
-  version: "0.1",
-});
 
 const SymbolKind = new Map([
 	[1, "File"],
@@ -41,22 +35,21 @@ const SymbolKind = new Map([
 	[26, "TypeParameter"],
 ])
 
-class ClangdClient {
-  constructor() {
+class LSPClient {
+  constructor(name, version) {
+    this.name = name;
+    this.version = version;
     this.workdir = process.cwd();
     this.base_uri = `file://${this.workdir}/`;
+    this.log_file = `/tmp/${this.name}-lsp.log`
   }
-  async start() {
+  async start(binary, args) {
     const log_fd = await open(this.log_file, 'a+');
     const log = log_fd.createWriteStream();
     log.write("--- Starting ---\n");
     this.proc = spawn(
-      "clangd", 
-      [
-        "--background-index", 
-        `--compile-commands-dir=${this.workdir}`,
-        "--log=info" // verbose
-      ],
+      binary,
+      args, 
       { 
         cwd: this.workdir, 
         stdio: ['pipe', 'pipe', log] 
@@ -64,14 +57,15 @@ class ClangdClient {
     );
     this.proc.stdout.on('data', (data) => { this.receive_message(data) } );
     log.close();
+
+    await this.initialize();
   }
 
   async reload() {
     if (!this.proc.kill('SIGTERM')) {
-      throw "Failed to kill clangd";
+      throw `Failed to kill ${this.name}`;
     }
     await this.start();
-    await this.initialize();
   }
 
   receive_message(data) {
@@ -158,41 +152,36 @@ class ClangdClient {
     })
   }
 
+
+  capabilities = {
+    textDocument: {
+      definition: { linkSupport: true },
+      references: {},
+      implementation: { linkSupport: true },
+      documentSymbol: { hierarchicalDocumentSymbolSupport: true }
+    },
+    workspace: { 
+      symbol: {}
+    },
+  };
+  initializationOptions = {};
+
   async initialize() {
-    await this.request("initialize", {
+    const init_response = await this.request("initialize", {
       processId: null,
-      clientInfo: {
-        name: "clangd-mcp",
-        version: "0.1"
+      clientInfo: { 
+        name: this.name, 
+        version: this.version
       },
       rootUri: this.workdir,
-      capabilities: {
-        textDocument: {
-          definition: { linkSupport: true },
-          references: {},
-          implementation: { linkSupport: true },
-          documentSymbol: { hierarchicalDocumentSymbolSupport: true }
-        },
-        workspace: { 
-          symbol: {}
-        },
-      },
-      initializationOptions: {}
+      capabilities: this.capabilities,
+      initializationOptions: this.initializationOptions
     });
     this.notify("initialized");
 
-    const files = await glob(this.workdir + '/**/*.{cpp,cc,c,h}');
-    if (files.length == 0) {
-      throw "No c or c++ files found"
+    if (this.post_initialization_callback != undefined) {
+      await this.post_initialization_callback(init_response);
     }
-    
-    const file = files[0];
-    if (!files[0].startsWith(this.workdir)) {
-      throw `Invalid file: ${file} for cwd: ${this.workdir}`
-    }
-
-    const relative_file = file.slice(this.workdir.length + 1);
-    await this.did_open(relative_file);
   }
 
   async did_open(relative_file, check=false) {
@@ -224,9 +213,10 @@ class ClangdClient {
     });
   }
 
-  async symbol_search(symbol) {
+  async symbol_search(symbol, extra={}) {
     const symbols = await this.request("workspace/symbol", {
-      query: symbol
+      query: symbol,
+      ...extra
     });
     
     if (symbols === null) {
@@ -386,7 +376,9 @@ class ClangdClient {
     }
     throw `Invalid uri: "${uri}" "`;
   }
-  
+
+  name;
+  version;
   workdir;
   base_uri;
   proc = undefined;
@@ -397,124 +389,120 @@ class ClangdClient {
     content_length: 0,
     pending: Buffer.alloc(0)
   };
-  is_initialized = false;
-  log_file = "/tmp/clangd.log";
+  post_initialization_callback = undefined;
+  log_file;
 }
 
-const clangd = new ClangdClient();
+export function CreateLSP(name, version) {
+  const server = new McpServer({ name, version });
+  const client = new LSPClient(name, version);
 
-server.registerTool("clangd_search_symbol", {
-  title: 'Symbol Search Definition',
-  description: "Search symbol definition in workspace. Symbol definitions can be identifers, classes, structs, functions, ...",
-  inputSchema: z.object({
-    symbol: z.string().describe("Name of the symbol to search"),
-  }),
-}, async function({symbol}) {
-  const symbols = await clangd.symbol_search(symbol);
+  server.registerTool(`${name}_search_symbol`, {
+    title: 'Symbol Search Definition',
+    description: "Search symbol definition in workspace. Symbol definitions can be identifers, classes, structs, functions, ...",
+    inputSchema: z.object({
+      symbol: z.string().describe("Name of the symbol to search"),
+    }),
+  }, async function({symbol}) {
+    const symbols = await client.symbol_search(symbol);
 
-  return {
-    content: [{ type: 'text', text: JSON.stringify(symbols) }],
-  }; 
-});
+    return {
+      content: [{ type: 'text', text: JSON.stringify(symbols) }],
+    }; 
+  });
 
-server.registerTool("clangd_find_all_references", {
-  title: 'Find All References',
-  description: "Find all references of a symbol based on its cursor location",
-  inputSchema: z.object({
-    file: z.string().describe("Filepath of the cursor position"),
-    line: z.number().describe("Line number of the cursor"),
-    character: z.number().describe("Character offset of the cursor"),
-    max_result: z.number().default(30).describe("Set a maximum number of result. Keep low to avoid overwhelming the context window")
-  }),
-}, async function({file, line, character}) {
-  const references = await clangd.find_all_references(file, line, character);
+  server.registerTool(`${name}_find_all_references`, {
+    title: 'Find All References',
+    description: "Find all references of a symbol based on its cursor location",
+    inputSchema: z.object({
+      file: z.string().describe("Filepath of the cursor position"),
+      line: z.number().describe("Line number of the cursor"),
+      character: z.number().describe("Character offset of the cursor"),
+      max_result: z.number().default(30).describe("Set a maximum number of result. Keep low to avoid overwhelming the context window")
+    }),
+  }, async function({file, line, character}) {
+    const references = await client.find_all_references(file, line, character);
+    
+    return {
+      content: [{ type: 'text', text: JSON.stringify(references) }],
+    }; 
+  });
+
+  server.registerTool(`${name}_hover_info`, {
+    title: 'Get Hover Information',
+    description: "Get hover information about the symbol at a cusor position.",
+    inputSchema: z.object({
+      file: z.string().describe("Filepath of the cursor position"),
+      line: z.number().describe("Line number of the cursor"),
+      character: z.number().describe("Character offset of the cursor"),
+    }),
+  }, async function({file, line, character}) {
+    const hover_info = await client.hover(file, line, character);
+    
+    if (hover_info === undefined || hover_info === null) {
+      throw "No hover info was found."
+    }
+
+    return {
+      content: [{ type: 'text', text: JSON.stringify(hover_info.contents.value) }],
+    }; 
+  });
+
+  server.registerTool(`${name}_goto_definition`, {
+    title: 'Find Definition at Position',
+    description: "Find the definition of the symbol at the position.",
+    inputSchema: z.object({
+      file: z.string().describe("Filepath of the cursor position"),
+      line: z.number().describe("Line number of the cursor"),
+      character: z.number().describe("Character offset of the cursor"),
+    }),
+  }, async function({file, line, character}) {
+    const definition = await client.definition(file, line, character);
+    
+    return {
+      content: [{ type: 'text', text: JSON.stringify(definition) }],
+    }; 
+  });
+
+  server.registerTool(`${name}_incoming_function_calls`, {
+    title: 'Incoming Function Calls',
+    description: "List the functions that call the cursor position. Only use on function definitions.",
+    inputSchema: z.object({
+      file: z.string().describe("Filepath of the cursor position"),
+      line: z.number().describe("Line number of the cursor"),
+      character: z.number().describe("Character offset of the cursor"),
+    }),
+  }, async function({file, line, character}) {
+    const incoming_calls = await client.incoming_calls(file, line, character);
+    
+    return {
+      content: [{ type: 'text', text: JSON.stringify(incoming_calls) }],
+    }; 
+  });
+
+  server.registerTool(`${name}_outgoing_function_calls`, {
+    title: 'Outgoing Function Calls',
+    description: "List the functions called in a function definition. Position is the function symbol.",
+    inputSchema: z.object({
+      file: z.string().describe("Filepath of the cursor position"),
+      line: z.number().describe("Line number of the cursor"),
+      character: z.number().describe("Character offset of the cursor"),
+    }),
+  }, async function({file, line, character}) {
+    const outgoing_calls = await client.outgoing_calls(file, line, character);
+    
+    return {
+      content: [{ type: 'text', text: JSON.stringify(outgoing_calls) }],
+    }; 
+  });
+
+  server.registerTool(`${name}_reload`, {
+    description: `Reload the ${client.name} server to use the latest compile_commands.json`,
+    inputSchema: z.object({}),
+  }, async function() {
+    await client.reload();
+  });
   
-  return {
-    content: [{ type: 'text', text: JSON.stringify(references) }],
-  }; 
-});
-
-server.registerTool("clangd_hover_info", {
-  title: 'Get Hover Information',
-  description: "Get hover information about the symbol at a cusor position.",
-  inputSchema: z.object({
-    file: z.string().describe("Filepath of the cursor position"),
-    line: z.number().describe("Line number of the cursor"),
-    character: z.number().describe("Character offset of the cursor"),
-  }),
-}, async function({file, line, character}) {
-  const hover_info = await clangd.hover(file, line, character);
-  
-  if (hover_info === undefined || hover_info === null) {
-    throw "No hover info was found."
-  }
-
-  return {
-    content: [{ type: 'text', text: JSON.stringify(hover_info.contents.value) }],
-  }; 
-});
-
-server.registerTool("clangd_goto_definition", {
-  title: 'Find Definition at Position',
-  description: "Find the definition of the symbol at the position.",
-  inputSchema: z.object({
-    file: z.string().describe("Filepath of the cursor position"),
-    line: z.number().describe("Line number of the cursor"),
-    character: z.number().describe("Character offset of the cursor"),
-  }),
-}, async function({file, line, character}) {
-  const definition = await clangd.definition(file, line, character);
-  
-  return {
-    content: [{ type: 'text', text: JSON.stringify(definition) }],
-  }; 
-});
-
-server.registerTool("clangd_incoming_function_calls", {
-  title: 'Incoming Function Calls',
-  description: "List the functions that call the cursor position. Only use on function definitions.",
-  inputSchema: z.object({
-    file: z.string().describe("Filepath of the cursor position"),
-    line: z.number().describe("Line number of the cursor"),
-    character: z.number().describe("Character offset of the cursor"),
-  }),
-}, async function({file, line, character}) {
-  const incoming_calls = await clangd.incoming_calls(file, line, character);
-  
-  return {
-    content: [{ type: 'text', text: JSON.stringify(incoming_calls) }],
-  }; 
-});
-
-server.registerTool("clangd_outgoing_function_calls", {
-  title: 'Outgoing Function Calls',
-  description: "List the functions called in a function definition. Position is the function symbol.",
-  inputSchema: z.object({
-    file: z.string().describe("Filepath of the cursor position"),
-    line: z.number().describe("Line number of the cursor"),
-    character: z.number().describe("Character offset of the cursor"),
-  }),
-}, async function({file, line, character}) {
-  const outgoing_calls = await clangd.outgoing_calls(file, line, character);
-  
-  return {
-    content: [{ type: 'text', text: JSON.stringify(outgoing_calls) }],
-  }; 
-});
-
-server.registerTool("clangd_reload", {
-  description: "Reload the clangd server to use the latest compile_commands.json",
-  inputSchema: z.object({}),
-}, async function() {
-  await clangd.reload();
-});
-
-async function main() {
-  await clangd.start();
-  await clangd.initialize();
-
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return {client, server, transport};
 }
-
-main();

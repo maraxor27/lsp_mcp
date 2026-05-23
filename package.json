@@ -1,11 +1,10 @@
 {
-  "name": "clangd-mcp",
+  "name": "lsp-mcp",
   "version": "1.0.0",
-  "description": "clangd mcp server",
+  "description": "lsp mcp servers",
   "license": "ISC",
   "author": "",
   "type": "module",
-  "main": "clangd_mcp.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint ."
