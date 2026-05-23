@@ -13,7 +13,7 @@ const ARGS = [
 ];
 
 async function main() {
-  const {client: clangd, server, transport} = CreateLSP(NAME, VERSION);
+  const {client: clangd, server, transport} = CreateLSP(NAME, VERSION, "cpp");
 
   clangd.post_initialization_callback = async function(_init_response) {
     console.log(_init_response); 

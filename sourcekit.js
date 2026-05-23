@@ -9,7 +9,7 @@ const ARGS = [
 ];
 
 async function main() {
-  const {client: sourcekit, server, transport} = CreateLSP(NAME, VERSION);
+  const {client: sourcekit, server, transport} = CreateLSP(NAME, VERSION, "swift");
   
   sourcekit.post_initialization_callback = async function(_init_response) {
     console.log(_init_response);
@@ -36,7 +36,7 @@ async function main() {
 
     console.log(`didOpen -> ${file}`);
     const relative_file = file.slice(this.workdir.length + 1);
-    await this.did_open(relative_file);
+    await this.did_open(relative_file, "swift");
   }
   
   sourcekit.initializationOptions = {

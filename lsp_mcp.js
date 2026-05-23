@@ -36,9 +36,10 @@ const SymbolKind = new Map([
 ])
 
 class LSPClient {
-  constructor(name, version) {
+  constructor(name, version, languageId) {
     this.name = name;
     this.version = version;
+    this.languageId = languageId;
     this.workdir = process.cwd();
     this.base_uri = `file://${this.workdir}/`;
     this.log_file = `/tmp/${this.name}-lsp.log`
@@ -184,7 +185,7 @@ class LSPClient {
     }
   }
 
-  async did_open(relative_file, check=false) {
+  async did_open(relative_file, languageId = this.languageId, check=false) {
     let data;
     const absolute_file = this.workdir + "/" + relative_file;
     try {
@@ -206,7 +207,7 @@ class LSPClient {
     this.notify("textDocument/didOpen", {
       textDocument: {
         uri: this.file_to_uri(relative_file),
-        languageId: "cpp",
+        languageId,
         version: 1,
         text: data
       }
@@ -393,9 +394,9 @@ class LSPClient {
   log_file;
 }
 
-export function CreateLSP(name, version) {
+export function CreateLSP(name, version, languageId = "cpp") {
   const server = new McpServer({ name, version });
-  const client = new LSPClient(name, version);
+  const client = new LSPClient(name, version, languageId);
 
   server.registerTool(`${name}_search_symbol`, {
     title: 'Symbol Search Definition',
