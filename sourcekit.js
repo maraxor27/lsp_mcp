@@ -1,5 +1,7 @@
 import { CreateLSP } from "./lsp_mcp.js";
+
 import { glob } from "glob";
+import levenshtein from 'js-levenshtein';
 
 const NAME = "sourcekit";
 const VERSION = "0.1";
@@ -12,32 +14,37 @@ async function main() {
   const {client: sourcekit, server, transport} = CreateLSP(NAME, VERSION, "swift");
   
   sourcekit.post_initialization_callback = async function(_init_response) {
-    console.log(_init_response);
     const files = await glob(this.workdir + '/**/*.swift');
     if (files.length == 0) {
       throw "No swift files found"
     }
     
-    let search_index = 0;
-    let file = files[search_index];
-    while (file != undefined && file.endsWith("Package.swift")) {
-      file = files[++search_index];
-    }
-
+    const file = files[0]; 
     if (file == undefined) {
       throw "Couldn't find suitable .swift file"
     }
-    console.log("file to open", file);
-    file = `${this.workdir}/Sources/Fuzzilli/FuzzIL/TypeSystem.swift`;
-    console.log("other", file);
     if (!file.startsWith(this.workdir)) {
       throw `Invalid file: ${file} for cwd: ${this.workdir}`
     }
 
-    console.log(`didOpen -> ${file}`);
     const relative_file = file.slice(this.workdir.length + 1);
     await this.did_open(relative_file, "swift");
   }
+
+  sourcekit.symbol_search_post_processing = async function(query, symbols) {
+    const closeness = symbols.map((symbol, index) => {
+      return {value: levenshtein(query, symbol.name), index}
+    });
+    
+    closeness.sort((a, b) => a.value - b.value);
+    
+    const sorted_symbols = new Array(closeness.length);
+    closeness.forEach((value, index) => {
+      sorted_symbols[index] = symbols[value.index];
+    });
+
+    return sorted_symbols
+  } 
   
   sourcekit.initializationOptions = {
     "backgroundIndexing": true,  
@@ -45,11 +52,7 @@ async function main() {
   }
 
   await sourcekit.start(BINARY, ARGS);
- 
-  await (new Promise(resolve => setTimeout(resolve, 1000)));
-
-  console.log(await sourcekit.symbol_search("ILType", {}))
-
+  
   server.connect(transport); 
 }
 

@@ -109,8 +109,8 @@ class LSPClient {
           receiver.pending = receiver.pending.subarray(receiver.content_length);
           
           const msg = JSON.parse(msg_json);
-          const promise_resolver = this.pending_requests.get(msg.id);
 
+          const promise_resolver = this.pending_requests.get(msg.id);
           if (promise_resolver !== undefined) {
             promise_resolver(msg.result);
             this.pending_requests.delete(msg.id);
@@ -151,21 +151,7 @@ class LSPClient {
       method,
       params
     })
-  }
-
-
-  capabilities = {
-    textDocument: {
-      definition: { linkSupport: true },
-      references: {},
-      implementation: { linkSupport: true },
-      documentSymbol: { hierarchicalDocumentSymbolSupport: true }
-    },
-    workspace: { 
-      symbol: {}
-    },
-  };
-  initializationOptions = {};
+  } 
 
   async initialize() {
     const init_response = await this.request("initialize", {
@@ -174,7 +160,7 @@ class LSPClient {
         name: this.name, 
         version: this.version
       },
-      rootUri: this.workdir,
+      rootUri: `file://${this.workdir}`,
       capabilities: this.capabilities,
       initializationOptions: this.initializationOptions
     });
@@ -237,6 +223,10 @@ class LSPClient {
         character
       }
     })
+
+    if (this.symbol_search_post_processing != undefined) {
+      return await this.symbol_search_post_processing(symbol, local_symbols);
+    }
 
     return local_symbols;
   }
@@ -391,7 +381,20 @@ class LSPClient {
     pending: Buffer.alloc(0)
   };
   post_initialization_callback = undefined;
+  symbol_search_post_processing = undefined;
   log_file;
+  capabilities = {
+    textDocument: {
+      definition: { linkSupport: true },
+      references: {},
+      implementation: { linkSupport: true },
+      documentSymbol: { hierarchicalDocumentSymbolSupport: true }
+    },
+    workspace: { 
+      symbol: {}
+    },
+  };
+  initializationOptions = {};
 }
 
 export function CreateLSP(name, version, languageId = "cpp") {
